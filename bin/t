@@ -1,0 +1,323 @@
+#!/usr/bin/env node
+// vim: set filetype=javascript:
+
+var path = require('path');
+var fs = require('fs');
+
+var program = require('commander');
+var moment = require('moment');
+var colors = require('colors');
+
+var T = require('../t');
+// In case want to debug
+// var options = {
+//     pomoTimer: 1,
+//     shortBreakTimer: 1,
+//     longerBreakTimer: 1.5
+// };
+var config = require('../lib/config');
+var addUser = require('../lib/adduser');
+var Client = require('../lib/client');
+var pomodoro = require('../lib/pomodoro')();
+
+// Track tasks daily, saved as a plain text file named by today's date
+// eg. 2013-10-10.t
+var today = moment().format('YYYY-MM-DD');
+
+function start(t) {
+  var lines = [
+    '\n',
+    '⚡️ Active task: ' + t.task.text.bold.yellow + '\t',
+    '\n',
+    '\n(ctrl+c: step away)'.grey
+  ];
+  var timerY = 1;
+  var timerX = lines[timerY].length;
+  var lastY = lines.length - 1;
+  var lastX = lines[lastY].length;
+  // TODO: More smart to determine longer or short break
+  var pomos = t.getAllPomodori().length;
+  var mode = (pomos && pomos % pomodoro.pomodori === 0) ? 'longer' : 'short';
+  var charm = require('charm')(process);
+
+  // Write lines
+  lines.forEach(charm.write, charm);
+
+  // Init timer's output position
+  charm.move(timerX - lastX, timerY - lastY);
+
+  pomodoro.on('tick', function(timer) {
+    charm.left(timer.length);
+    charm.write(timer.green);
+  });
+
+  pomodoro.start(mode);
+
+  charm.removeAllListeners('^C');
+  // Once accept key to break or interrupt
+  charm.once('^C', function() {
+    var start = t.task.start.split(':');
+    var startTime = moment({
+      hours: +start[0],
+      minutes: +start[1]
+    });
+    // Duration is minutes
+    var duration = moment().diff(startTime, 'minutes');
+    if (duration >= pomodoro.pomoTimer) {
+      // console.log('Take a break: ' + mode);
+      // Take a break
+      t.task.metas.pomodoro = 1;
+      // Remove interruption mark on an existing task
+      delete t.task.metas.interruption;
+      // Stop here to record actual end time
+      t.stop();
+      pomodoro.break(mode);
+    }
+    else {
+      // console.log('Take an interruption');
+      t.task.metas.interruption = 1;
+      // Remove pomodoro mark on an existing task
+      delete t.task.metas.pomodoro;
+      pomodoro.stopTimer();
+      // Log the interruption
+      charm.move(-timerX, lastY - timerY + 1);
+      console.log();
+      console.log('Why the interruption?:\n'.red);
+
+      var conf = config.load();
+      conf.interruptions = ['Meeting','Bio Break','Emergency','Other'];
+      var inputs = [];
+      var interruptions = conf.interruptions;
+      interruptions.forEach(function(value, i) {
+        //console.log((i + '. ' + value));
+      });
+      process.stdin.on('data', function(chunk) {
+        var s = chunk.toString('utf8');
+        if (s.charCodeAt(0) === 127 && inputs.length > 0) { // Match BACKSPACE
+          inputs.pop();
+          charm.erase('start');
+          charm.move(-inputs.length - 1, 0);
+          charm.write(inputs.join(''));
+        }
+        else if (s.match(/\r\n|[\n\r\u0085\u2028\u2029]/)) { // Match ENTER
+          // Remove first '\u003'
+          //inputs.shift();
+          // console.log(inputs);
+          var line = inputs.join('').trim();
+          if (line.match(/^\d+$/)) {
+            t.task.metas.interruption = interruptions[+line] || 1;
+          }
+          else {
+            t.task.metas.interruption = line || 1;
+            if (line && interruptions.indexOf(line) === -1) {
+              interruptions.push(line);
+              config.save(conf);
+            }
+          }
+          console.log('\n');
+          console.log('Interrupted\n'.red);
+          charm.emit('^C');
+        }
+        else {
+          inputs.push(s);
+        }
+      });
+    }
+
+    // Exit on next Ctrl+C
+    charm.once('^C', function() {
+      if (t.task.metas.interruption) {
+        // Interrupted task should be saved once exit to record Interrupt
+        // reason.
+        t.stop();
+      }
+      process.exit();
+    });
+  });
+}
+
+// date format: YYYY-MM-DD
+function iniT(date, cb) {
+  var conf = config.load(function(err) {
+    console.log('\nPlease set task saved directory first.');
+    program.outputHelp();
+    process.exit(1);
+  });
+
+  var t = new T(path.join(conf.dir, (date || today) + '.t'));
+  if (cb) {
+    t.stream.on('error', function(e) { cb(e, t); });
+    t.parser.on('end', function(e) { cb(e, t); });
+  }
+  return t;
+}
+
+program
+  .command('set [dir]')
+  .description('get/set the task saved directory')
+  .action(function(d) {
+    var conf = config.load();
+    if (d) {
+      conf.dir = path.resolve(d);
+      config.save(conf);
+      console.log('Set the saved directory to ' + conf.dir + ' success!');
+    }
+    else {
+      // Show the saved directory without specified
+      console.log(conf.dir || 'You have not set task saved directory yet!');
+    }
+  });
+
+program
+  .command('add <task>')
+  .description('add a new task (todo)')
+  .action(function(text) {
+    iniT(today, function(e, t) {
+      t.todo(text);
+    });
+  });
+
+program
+  .command('start <id|task>')
+  .description('start a task by id, or start a new task')
+  .action(function(arg) {
+    iniT(today, function(e, t) {
+      if (/^\d+$/.test(arg)) {
+        // Start task by id
+        var id = parseInt(arg, 10);
+          try {
+            t.start(id);
+            start(t);
+          }
+          catch(err) {
+            console.log('Task id ' + arg.red + ' does not exist!');
+            process.exit(1);
+          }
+      }
+      else {
+        // Add new task then start
+        t.start(arg);
+        start(t);
+      }
+    });
+  });
+
+program
+  .command('list [period]')
+  .description('list tasks, optional specified by days or week.\n' +
+      '\teg.\n' +
+      '\tlist  \tlist today\'s tasks\n' +
+      '\tlist 3\tlist last 3 day\'s tasks'
+    )
+  .action(function(period) {
+    if (period) {
+      var days = parseInt(period, 10);
+      var date;
+
+      var _next = function(e, t) {
+        console.log('\n' + date.bold.magenta + '\n');
+        var list = t.getSortedList();
+        if (list.length === 0) {
+          console.log('You have no task today!'.cyan);
+        }
+        list.forEach(function(item, i) {
+          // Exclude todo items
+          if (item.start && item.end) {
+            var duration = item.start + ' - ' + item.end;
+            console.log(duration.green + '\t' + item.text.cyan);
+          }
+        });
+        if (--days >= 0) {
+          summary(days);
+        }
+      };
+
+      var summary = function(days) {
+        date = moment().subtract('d', days).format('YYYY-MM-DD');
+        iniT(date, _next);
+      };
+
+      if (days > 0 && days < 30) {
+        summary(--days);
+      }
+    }
+    else {
+      var t = iniT();
+      t.parser.on('end', function() {
+        var list = t.getUniqList();
+        if (list.length === 0) {
+          console.log('You have no task tracked today!');
+          process.exit(1);
+        }
+        // List with ids
+        list.forEach(function(item, i) {
+          console.log(i.toString().green+ '\t' + item.text.cyan);
+        });
+      });
+    }
+  });
+
+program
+  .command('adduser')
+  .description('register/auth user')
+  .action(function() {
+    addUser(function(err) {
+      console.log(err ? err : 'Done');
+    });
+  });
+
+program
+  .command('upload [period]')
+  .description('upload tasks, optional specified by days or week or filename.\n' +
+      '\teg.\n' +
+      '\tupload  \tupload today\'s tasks\n' +
+      '\tupload 3\tupload last 3 day\'s tasks'
+    )
+  .action(function(period) {
+    var client = new Client();
+    var days, i, filepath, conf;
+
+    function done(err) {
+      if (err) {
+        console.log(err);
+        process.exit();
+      }
+      else {
+        console.log('Upload Done!');
+      }
+    }
+
+    conf = config.load(done);
+
+    if (period) {
+      filepath = path.resolve(period);
+      days = parseInt(period, 10);
+
+      if (fs.existsSync(filepath)) {
+        client.upload([filepath], done);
+      }
+      else if (days) {
+        var files = [], date;
+        for(i = days; i--;) {
+          date = moment().subtract('d', i).format('YYYY-MM-DD');
+          files.push(path.join(conf.dir, date + '.t'));
+        }
+        // TODO: limit files' count
+        client.upload(files, done);
+      }
+      else {
+        console.log('No file to upload');
+        // program.outputHelp();
+      }
+    }
+    else {
+      // default today's task
+      client.upload([path.join(conf.dir, today + '.t')], done);
+    }
+  });
+
+program.parse(process.argv);
+
+if (process.argv.length == 2) {
+  program.outputHelp();
+}

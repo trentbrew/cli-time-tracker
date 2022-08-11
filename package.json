@@ -1,0 +1,45 @@
+{
+  "name": "t-cli",
+  "version": "0.1.8",
+  "description": "A daily time tracker",
+  "keywords": [
+    "time tracker",
+    "cli",
+    "tool",
+    "GTD"
+  ],
+  "main": "t",
+  "scripts": {
+    "test": "./node_modules/mocha/bin/mocha test"
+  },
+  "bin": {
+    "t": "./bin/t"
+  },
+  "author": {
+    "name": "hulufei",
+    "email": "f.calabash@gmail.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hulufei/t.git"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "should": "~2.1.1",
+    "sinon": "~1.7.3",
+    "mocha": "~1.17.0",
+    "nock": "~0.27.2"
+  },
+  "dependencies": {
+    "commander": "~2.1.0",
+    "moment": "~2.4.0",
+    "split": "~0.2.10",
+    "lodash": "~2.4.1",
+    "colors": "~0.6.2",
+    "mkdirp": "~0.3.5",
+    "growl": "~1.7.0",
+    "charm": "~0.2.0",
+    "read": "~1.0.5",
+    "request": "~2.34.0"
+  }
+}
